@@ -43,6 +43,12 @@ flowchart LR
   reason. Trouble with the database does not count against an event.
 - **An event that kills its worker** is found out: what went down with it is taken up one at a time.
 
+## The image
+
+From the first run of [image.yml](.github/workflows/image.yml) on, GitHub makes one image of each commit on `main`, from the very
+files that the tests ran against, lists what is in it and signs both. [What the container promises](docs/container.md) is tried
+in every pull request: on a disk that cannot be written to, without any right of the system, and without a shell inside.
+
 ## What it does not do yet
 
 - Exactly once holds for what is in this database. Calls to others need an id of their own, and come later.
@@ -62,3 +68,5 @@ bash .github/scripts/tests.sh
 Directed and approved by Luis Orozco. Code, tests and texts are written by Claude, an AI agent that proposes its changes under
 an identity of its own. Why the inbox is built as it is stands in a [note](docs/decisions/0001-inbox.md), drafted by Claude and
 confirmed by the owner.
+
+The licence is [Apache 2.0](LICENSE). Whoever passes it on keeps [NOTICE](NOTICE).
