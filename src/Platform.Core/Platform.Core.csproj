@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- For the one call that sends a signal, which only test builds have. -->
+    <AllowUnsafeBlocks Condition="'$(Faults)' == 'true'">true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

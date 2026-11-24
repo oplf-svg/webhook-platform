@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- Test names are sentences, and a test that hangs is stopped by the run as a whole. -->
+    <NoWarn>$(NoWarn);CA1707;CA1861;xUnit1051</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="xunit.v3" />
+    <ProjectReference Include="../../src/Platform.Api/Platform.Api.csproj" />
+    <ProjectReference Include="../../src/Platform.Worker/Platform.Worker.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,119 @@
+name: ci
+
+# No branch or path filter: a filtered-out run would leave the required check "ci" pending forever.
+# "edited" is here because a pull request's title becomes part of the commit on main.
+# No manual trigger: a manual run on the same commit could report "ci" without checking the commits.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# What is checked stands in scripts and not here, because agents may not change a workflow file.
+jobs:
+  # The other jobs can print lines of the code, so they wait until no private term is in it.
+  tests:
+    needs: blocked-terms
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - run: bash .github/scripts/tests.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: counted
+          path: build/public
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # Proves that the tests can fail.
+  wrong:
+    name: wrong (${{ matrix.part }})
+    needs: blocked-terms
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1/6, 2/6, 3/6, 4/6, 5/6, 6/6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - run: bash .github/scripts/wrong.sh "$PART"
+        env:
+          PART: ${{ matrix.part }}
+
+  blocked-terms:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      attempt: ${{ github.run_attempt }}
+    steps:
+      # The check is the one of cloud-labs, at a commit that was approved there, so a pull request here cannot change what
+      # reads the terms. It is put aside before the pull request is there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: oplf-svg/cloud-labs
+          ref: 30c47d7b0aa2419939ef8d2f206aa90f00ee01e2
+          persist-credentials: false
+      - run: cp .github/scripts/blocked_terms.py "$RUNNER_TEMP/blocked_terms.py"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Asked for again on every run, because a re-run replays the title it first saw.
+      - name: Get the current title and description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" > "$RUNNER_TEMP/pull.json"
+      - name: Look for private terms
+        env:
+          BLOCKED_TERMS: ${{ secrets.BLOCKED_TERMS }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PULL_REQUEST_FILE: ${{ runner.temp }}/pull.json
+        # -I: nothing is imported from the folder of the pull request.
+        run: python3 -I "$RUNNER_TEMP/blocked_terms.py"
+
+  # The required check. It runs even when a job above fails or is skipped, because GitHub counts a skipped required check as
+  # passed. After a failure, re-run all jobs: "failed jobs only" would reuse a blocked-terms result from before the title was
+  # edited, so it fails here.
+  ci:
+    if: ${{ always() }}
+    needs: [blocked-terms, tests, wrong]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          jq --exit-status --arg attempt "$ATTEMPT" '
+            length == 3
+            and all(.[]; .result == "success")
+            and ."blocked-terms".outputs.attempt == $attempt
+          ' <<< "$RESULTS" > /dev/null
