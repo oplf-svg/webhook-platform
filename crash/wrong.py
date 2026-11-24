@@ -24,8 +24,9 @@ from world import ROOT, Postgres
 HERE = pathlib.Path(__file__).resolve().parent
 # SQL that does not even run would fail for a reason that proves nothing: syntax, or something that does not exist.
 NOT_EVEN_SQL = re.compile(r"\b(42601|42703|42P01|42883|42P18|42804|42704|42P10)\b")
-# These say that a test did not get as far as looking.
-NOT_A_FINDING = re.compile(r"still not: (the database answers|every fault has happened|every stopped process|\w+ is ready)")
+# These say that a test did not get as far as looking. Nobody gives up and nobody says yes only when nothing was asked: each
+# try ends by itself after 12 seconds.
+NOT_A_FINDING = re.compile(r"still not: (the database answers|every fault has happened|every stopped process|a commit waits for|somebody gave up|\w+ is ready)")
 # A small storm is enough to notice one mistake.
 STORM = {"STORM_EVENTS": "250", "STORM_TIMES": "1", "STORM_ATTEMPTS": "8", "STORM_LONGEST": "120", "STORM_SETTLED": "30"}
 
@@ -225,7 +226,8 @@ class Copy:
         if group == "storm":
             counted = re.findall(r"^\| \*\*(.+?)\*\* \| ([1-9]\d*) \|$", text, re.MULTILINE)
             return f"the storm ({', '.join(f'{what.lower()}: {times}' for what, times in counted) or why[-1][:90]})"
-        return failed.group(1).replace("_", " ")
+        # With the reason, so that everybody can see if it is the right one.
+        return f"{failed.group(1).replace('_', ' ')}: {why[-1][:90]}".replace("|", "/")
 
 
 def chosen(words):

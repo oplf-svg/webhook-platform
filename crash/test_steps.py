@@ -347,18 +347,20 @@ def test_16_the_standby_does_not_answer(world, sent, make_sender, feeds):
     sender = make_sender(world)
     sender.deliver(order(feeds[0], "N-before"))
     world.settle()
-    answers = []
-    with world.postgres.connect() as admin:
-        admin.execute("alter system set synchronous_standby_names = 'nobody'")
-        admin.execute("select pg_reload_conf()")
-        try:
-            feed = threading.Thread(target=lambda: answers.append(sender.deliver(order(feeds[0], "N-waits"))))
-            feed.start()
-            wait_until("somebody gave up waiting", lambda: sent.answers[503] + sent.answers[None] >= 2, 40)
-            assert not answers
-        finally:
-            admin.execute("alter system reset synchronous_standby_names")
-            admin.execute("select pg_reload_conf()")
+    answers, seen = [], []
+    with world.postgres.without_its_standby():
+        start = time.monotonic()
+        feed = threading.Thread(target=lambda: answers.append(sender.deliver(order(feeds[0], "N-waits"))))
+        feed.start()
+
+        def look():
+            if not seen or seen[-1][1] != sent.answers:
+                seen.append((round(time.monotonic() - start, 1), dict(sent.answers)))
+            return answers or sent.answers[503] + sent.answers[None] >= 2
+
+        # A yes ends it at once, so that it is seen as a yes and not as a wait that took too long.
+        wait_until("somebody gave up waiting, or said yes", look, 40, saw=lambda: seen)
+        assert not answers, seen
     feed.join(60)
     # It was there all the time, but only now it is certain.
     assert answers == [200]

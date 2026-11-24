@@ -23,15 +23,15 @@ BUILD = ROOT / "build"
 IMAGE = (ROOT / ".github" / "postgres-image").read_text(encoding="utf-8").strip()
 
 
-def wait_until(what, check, seconds=30.0, pause=0.05):
-    """Waits until the check is true and returns what it returned. Says what it waited for if that never happens."""
+def wait_until(what, check, seconds=30.0, pause=0.05, saw=None):
+    """Waits until the check is true and returns what it returned. Says what it waited for if that never happens, and what it saw."""
     end = time.monotonic() + seconds
     while True:
         result = check()
         if result:
             return result
         if time.monotonic() > end:
-            raise AssertionError(f"after {seconds:.0f} seconds still not: {what}")
+            raise AssertionError(f"after {seconds:.0f} seconds still not: {what}" + (f" (seen: {saw()})" if saw else ""))
         time.sleep(pause)
 
 
@@ -87,6 +87,35 @@ class Postgres:
 
     def go_on(self):
         docker("unpause", self.name)
+
+    @contextlib.contextmanager
+    def without_its_standby(self):
+        """Every commit waits for a standby that is not there.
+
+        It begins only when a commit is seen to wait. The reload returns before the server has read anything, and what is
+        committed until then waits for nobody: the flag for it is set by one process, the checkpointer, a moment later.
+        """
+        over = threading.Event()
+
+        def commits():
+            with contextlib.suppress(psycopg.Error), self.connect() as connection:
+                while not over.is_set():
+                    connection.execute("insert into probe values (1)")
+
+        with self.connect() as admin:
+            admin.execute("create table if not exists probe (n integer)")
+            admin.execute("alter system set synchronous_standby_names = 'nobody'")
+            admin.execute("select pg_reload_conf()")
+            probe = threading.Thread(target=commits, daemon=True)
+            probe.start()
+            try:
+                wait_until("a commit waits for the standby", lambda: admin.execute("select count(*) from pg_stat_activity where wait_event = 'SyncRep'").fetchone()[0])
+                yield
+            finally:
+                over.set()
+                admin.execute("alter system reset synchronous_standby_names")
+                admin.execute("select pg_reload_conf()")
+        probe.join(10)
 
     def remove(self):
         docker("rm", "--force", "--volumes", self.name, check=False)
