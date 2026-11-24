@@ -35,6 +35,8 @@ TOOLS = {"sh", "bash", "dash", "ash", "busybox", "apt", "apt-get", "dpkg", "curl
 # Text in a .NET file is UTF-16. The second word is always there, so it shows that such text is found at all.
 MARKS = {"Platform.Core.dll": ("PLATFORM_FAULT", "order.placed"), "Platform.Data.dll": ("PLATFORM_SQL", "select pg_advisory_xact_lock")}
 BASE_PACKAGES = {"base-files", "ca-certificates", "libc6", "libgcc-s1", "libssl3t64", "libstdc++6"}
+# Not "openssl": the base names that package, but holds only its empty folders and not the program. TOOLS looks for the program.
+TOOL_PACKAGES = {"apt", "bash", "busybox", "coreutils", "curl", "dash", "dpkg", "perl-base", "python3-minimal", "wget"}
 KINDS = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
 
 
@@ -227,7 +229,7 @@ def check_contents(contents, locks):
     debs = {found.group(1) for one in packages if (found := re.match(r"pkg:deb/ubuntu/([^@]+)@", one.replace("%2B", "+").replace("%2b", "+")))}
     nugets = {found.groups() for one in packages if (found := re.match(r"pkg:nuget/([^@]+)@([^?]+)", one))}
     need(BASE_PACKAGES <= debs, f"The list does not name what the base holds: {sorted(BASE_PACKAGES - debs)}.")
-    need(not debs & TOOLS, f"The list names tools: {sorted(debs & TOOLS)}.")
+    need(not debs & TOOL_PACKAGES, f"The list names tools: {sorted(debs & TOOL_PACKAGES)}.")
     missing = {package for packages in locks.values() for package in packages} - nugets
     need(not missing, f"The list does not name {sorted(missing)}.")
     return len(debs), len(nugets)

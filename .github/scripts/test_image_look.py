@@ -395,16 +395,16 @@ class Base(unittest.TestCase):
 
 class Contents(unittest.TestCase):
     def setUp(self):
-        self.names = [f"pkg:deb/ubuntu/{one.replace('+', '%2B')}@1?arch=amd64" for one in look.BASE_PACKAGES] + ["pkg:nuget/Npgsql@10.0.3", "pkg:nuget/Microsoft.NETCore.App.Runtime.linux-x64@10.0.15"]
+        self.names = [f"pkg:deb/ubuntu/{one.replace('+', '%2B')}@1?arch=amd64" for one in look.BASE_PACKAGES] + ["pkg:deb/ubuntu/openssl@3?arch=amd64", "pkg:nuget/Npgsql@10.0.3", "pkg:nuget/Microsoft.NETCore.App.Runtime.linux-x64@10.0.15"]
 
     def check(self):
         return look.check_contents({"spdxVersion": "SPDX-2.3", "packages": [{"externalRefs": [{"referenceType": "purl", "referenceLocator": one}]} for one in self.names] + [{"name": "without"}]}, LOCKS)
 
     def test_right(self):
-        self.assertEqual(self.check(), (len(look.BASE_PACKAGES), 2))
+        self.assertEqual(self.check(), (len(look.BASE_PACKAGES) + 1, 2))
 
     def test_what_is_missing(self):
-        for number in range(len(look.BASE_PACKAGES) + 1):
+        for number in [*range(len(look.BASE_PACKAGES)), len(look.BASE_PACKAGES) + 1]:
             with self.subTest(self.names[number]):
                 taken = self.names.pop(number)
                 with self.assertRaisesRegex(look.Refused, "does not name"):
@@ -422,9 +422,11 @@ class Contents(unittest.TestCase):
             self.check()
 
     def test_a_tool(self):
-        self.names.append("pkg:deb/ubuntu/bash@5")
-        with self.assertRaisesRegex(look.Refused, "names tools"):
-            self.check()
+        for tool in sorted(look.TOOL_PACKAGES):
+            self.names.append(f"pkg:deb/ubuntu/{tool}@5")
+            with self.subTest(tool), self.assertRaisesRegex(look.Refused, "names tools"):
+                self.check()
+            self.names.pop()
 
     def test_another_form(self):
         with self.assertRaisesRegex(look.Refused, "another form"):
