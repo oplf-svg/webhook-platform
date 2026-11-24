@@ -1,5 +1,8 @@
 # webhook-platform
 
+Part of the public portfolio of Luis Orozco. The other repositories stand at
+[github.com/oplf-svg](https://github.com/oplf-svg).
+
 Takes orders as signed webhooks and handles each one exactly once. The company behind it is made up: no shop, customer or
 order in here is real.
 
@@ -15,7 +18,7 @@ Every pull request has to show it again:
 | [One at a time](crash/test_steps.py) | Each of them alone, most of them at a place that is known. A process is killed right after it stored an event, or stops in the middle of its transaction and goes on much later |
 | [Everything at once](crash/test_storm.py) | Real processes are killed at every step and at any other moment, connections are cut and the database is killed, while events come twice, late, changed and forged. Every run is different |
 | [Counted from outside](crash/count.py) | A program in another language knows what it sent. It reads the tables itself and compares |
-| [Tests that can fail](crash/wrong.py) | More than 100 mistakes that are easy to make, one at a time. The tests have to notice each of them |
+| [Tests that can fail](crash/wrong.py) | More than 100 mistakes that are easy to make, one at a time. The tests have to notice each of them, and the list says which tests saw what |
 
 The numbers of each run are on its summary page under [Actions](../../actions/workflows/ci.yml).
 
@@ -54,7 +57,8 @@ They need the .NET SDK 10.0.4xx, Python 3.12 or newer, and Docker.
 bash .github/scripts/tests.sh
 ```
 
-## Who made what
+## Who made this
 
-The code, the SQL and the tests were written by Claude, an AI agent that proposes its changes under an identity of its own.
-The owner decides what is built and what is merged.
+Directed and approved by Luis Orozco. Code, tests and texts are written by Claude, an AI agent that proposes its changes under
+an identity of its own. Why the inbox is built as it is stands in a [note](docs/decisions/0001-inbox.md), drafted by Claude and
+confirmed by the owner.

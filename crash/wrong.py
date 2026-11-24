@@ -204,15 +204,20 @@ class Copy:
         more = {"PLATFORM_SQL": str(sql)} if sql else {}
         if group == "quick":
             more["PLATFORM_TEST_DATABASE"] = postgres.dotnet("postgres", "postgres", postgres.password)
-            code, text = self.run(["dotnet", "build/f/bin/Platform.Tests/release/Platform.Tests.dll", "-noColor", "-stopOnFail"], **more)
+            code, text = self.run(["dotnet", "build/f/bin/Platform.Tests/release/Platform.Tests.dll", "-noColor"], **more)
             # Not in the log, because one of the tests is about a table that is not there.
             said = "\n".join(line for line in text.split("\n") if not line.startswith("{"))
             if sql and NOT_EVEN_SQL.search(said):
                 raise ValueError("the SQL does not even run: " + NOT_EVEN_SQL.search(said).group())
-            failed = re.findall(r"Platform\.Tests\.(\w+)\.(\w+).*\[FAIL\]", text)
-            if bool(failed) != bool(code) or (not failed and not re.search(r"Total: [1-9]\d\d, Errors: 0, Failed: 0, Skipped: 0", text)):
+            failed = re.findall(r"^ +Platform\.Tests\.(\w+)\.(\w+).*\[FAIL\]\n((?: {6}(?!Stack Trace:).*\n)*)", text, re.MULTILINE)
+            # A database that did not come up would look as if everything had noticed it.
+            if "threw in InitializeAsync" in text or bool(failed) != bool(code) or (not failed and not re.search(r"Total: [1-9]\d\d, Errors: 0, Failed: 0, Skipped: 0", text)):
                 raise ValueError(f"the tests did not run as they should:\n{text[-2000:]}")
-            return f"{failed[0][0]}: {failed[0][1].replace('_', ' ')}" if failed else None
+            # All of them, each with its reason: the first one to fail need not be the one that is about this mistake.
+            reasons = {}
+            for place, name, reason in failed:
+                reasons.setdefault(f"{place}: {name.replace('_', ' ')}", " ".join(reason.split())[:110])
+            return "; ".join(f"{test} ({reason})" for test, reason in reasons.items()).replace("|", "/") or None
         words = [self.python, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "--tb=short", "--no-header"]
         words += ["test_storm.py", "-s"] if group == "storm" else ["test_steps.py", *(["-k", steps] if steps else [])]
         code, text = self.run(words, "crash", **more, **(STORM if group == "storm" else {}))
