@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/Platform.Core/Platform.Core.csproj" />
+  <Project Path="src/Platform.Data/Platform.Data.csproj" />
+  <Project Path="src/Platform.Api/Platform.Api.csproj" />
+  <Project Path="src/Platform.Worker/Platform.Worker.csproj" />
+  <Project Path="tests/Platform.Tests/Platform.Tests.csproj" />
+</Solution>
