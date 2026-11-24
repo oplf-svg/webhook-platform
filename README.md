@@ -56,5 +56,5 @@ bash .github/scripts/tests.sh
 
 ## Who made what
 
-The code, the SQL and the tests were written by Claude, an AI agent, which works here under an identity of its own: it can
-propose a change, but it cannot approve or merge one. The owner decides what is built and what is merged.
+The code, the SQL and the tests were written by Claude, an AI agent that proposes its changes under an identity of its own.
+The owner decides what is built and what is merged.
