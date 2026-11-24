@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Everything that has to pass before something is merged. Needs the .NET SDK 10.0.2xx, Python 3.12 or newer, and Docker.
+# Everything that has to pass before something is merged. Needs the .NET SDK 10.0.4xx, Python 3.12 or newer, and Docker.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

@@ -48,7 +48,7 @@ flowchart LR
 
 ## Run the tests
 
-They need the .NET SDK 10.0.2xx, Python 3.12 or newer, and Docker.
+They need the .NET SDK 10.0.4xx, Python 3.12 or newer, and Docker.
 
 ```bash
 bash .github/scripts/tests.sh
