@@ -10,5 +10,8 @@ python3 .github/scripts/test_image_workflow.py
 bash .github/scripts/image.sh webhook-platform:new "$commit"
 python3 .github/scripts/image_test.py webhook-platform:new
 docker save --output build/image.tar webhook-platform:new
-python3 .github/scripts/image_look.py build/image.tar "$commit"
-bash .github/scripts/image_list.sh build/image.tar build/contents.spdx.json "$commit"
+# Both, so that one run shows all that is wrong.
+failed=0
+python3 .github/scripts/image_look.py build/image.tar "$commit" || failed=1
+bash .github/scripts/image_list.sh build/image.tar build/contents.spdx.json "$commit" || failed=1
+exit "$failed"

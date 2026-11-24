@@ -41,7 +41,7 @@ Anything else that is wrong stops the start too, with the message of what could 
 ## The box
 
 - It runs as user and group 1654, with a disk that cannot be written to, without any right of the system. Nothing is written,
-  not even to `/tmp`.
+  not even to `/tmp`. Its own files belong to root, so it could not change them on another disk either.
 - There is no shell in it, no package manager and no other tool.
 - Of ours it holds the two programs, the licences, and Amazon's public roots for databases in London
   (`/app/certificates/aws-rds-eu-west-2.pem`), which are in no public list.

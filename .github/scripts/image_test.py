@@ -213,11 +213,12 @@ class Container(unittest.TestCase):
         self.assertEqual(api.code(40), 0)
 
     def test_06_migration(self):
-        subprocess.Popen(["docker", "exec", f"{NAME}-db", "psql", "--username", "postgres", "--dbname", "platform", "--command", "select pg_advisory_lock(4711), pg_sleep(8)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        holder = subprocess.Popen(["docker", "exec", f"{NAME}-db", "psql", "--username", "postgres", "--dbname", "platform", "--command", "select pg_advisory_lock(4711), pg_sleep(8)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_until("somebody else holds the lock", lambda: sql("select count(*) from pg_locks where locktype = 'advisory' and granted") == "1")
         second = self.worker("migrate")
         self.assertNotIn(second.code(20), (0, 2), second.said())
         self.assertEqual(sql("select to_regclass('inbox') is null"), "t")
+        holder.wait(30)
         wait_until("the lock is free", lambda: sql("select count(*) from pg_locks where locktype = 'advisory'") == "0")
         self.migrate()
         self.migrate()
