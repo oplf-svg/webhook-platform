@@ -1,0 +1,203 @@
+name: image
+
+# One signed image for each commit on main. Nothing else is ever signed: a pull request gets no image.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# A commit is never built twice at the same time. A second run for the same commit stops at the push.
+concurrency:
+  group: image-${{ github.sha }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE: ghcr.io/oplf-svg/webhook-platform
+
+# Who may do what: "build" runs code of the repo and may write nothing. "look" reads what came out. "push" and "attest" may
+# write, and run nothing of the repo, not even a script. What they take is tied together by fingerprints.
+jobs:
+  # The pull request was tested, but main can be a mix of two that nobody tested together. The image is made of the very
+  # files that the tests ran against.
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      # As in a pull request: the tests, and then image_try.sh, which leaves build/image.tar.
+      - run: bash .github/scripts/tests.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: build/image.tar
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: seen
+          path: build/public
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # Looks from outside, on another machine. A hijacked build could write what it likes about itself.
+  look:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      tar: ${{ steps.look.outputs.tar }}
+      config: ${{ steps.look.outputs.config }}
+      contents: ${{ steps.list.outputs.contents }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: in
+      - run: python3 .github/scripts/test_image_look.py
+      - id: look
+        run: python3 .github/scripts/image_look.py in/image.tar "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - run: bash .github/scripts/image_list.sh in/image.tar contents.spdx.json "$GITHUB_SHA"
+      - id: list
+        run: echo "contents=$(sha256sum contents.spdx.json | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: contents
+          path: contents.spdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # Takes exactly the file that was looked into. If a later job fails, re-run the failed jobs only: the image is there then,
+  # and this job would stop.
+  push:
+    needs: look
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: in
+      - name: Sign in to GitHub's registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
+      - id: push
+        env:
+          TAR: ${{ needs.look.outputs.tar }}
+          CONFIG: ${{ needs.look.outputs.config }}
+        run: |
+          [ -n "$TAR" ]
+          [ -n "$CONFIG" ]
+          echo "$TAR  in/image.tar" | sha256sum --check --strict
+          if found="$(docker buildx imagetools inspect "$IMAGE:$GITHUB_SHA" 2>&1)"; then echo "There is already an image for this commit."; exit 1; fi
+          grep --quiet --ignore-case --extended-regexp 'not found|unknown|denied|forbidden' <<< "$found"
+          docker load --input in/image.tar
+          docker tag webhook-platform:new "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker buildx imagetools inspect --raw "$IMAGE:$GITHUB_SHA" > manifest.json
+          [ "$(jq --raw-output .config.digest manifest.json)" = "$CONFIG" ]
+          digest="sha256:$(sha256sum manifest.json | cut -d ' ' -f 1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "\`$IMAGE@$digest\` is commit \`$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Signs, with the name that GitHub gives to this workflow on main. It gets a fingerprint and a list, nothing that runs.
+  attest:
+    needs: [look, push]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      attestations: write
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: contents
+          path: in
+      # An artifact can be overwritten under its name, so the name says nothing.
+      - name: The list is the one that was looked at
+        env:
+          CONTENTS: ${{ needs.look.outputs.contents }}
+        run: |
+          [ -n "$CONTENTS" ]
+          echo "$CONTENTS  in/contents.spdx.json" | sha256sum --check --strict
+      - name: Sign in to GitHub's registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
+      - name: How it was built
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ needs.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: What is in it
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ needs.push.outputs.digest }}
+          sbom-path: in/contents.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+  # What a cloud will see: no sign-in. Red at the very first run if GitHub makes the new package private. Then it is made
+  # public by hand, once, and this job is run again. The deploy has its own check, in cloud-labs.
+  check:
+    needs: [push, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      attestations: read
+    env:
+      DIGEST: ${{ needs.push.outputs.digest }}
+      GH_TOKEN: ${{ github.token }}
+      OTHER: mcr.microsoft.com/dotnet/aspnet@sha256:7c625e44e5d588b4d7b2a913e94ca4bd5098ce47442da404829e4c7936a764e1
+    steps:
+      - name: Everybody can read it
+        run: |
+          name="${IMAGE#ghcr.io/}"
+          token="$(curl --silent --show-error --fail "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" | jq --exit-status --raw-output .token)"
+          curl --silent --show-error --fail --header "Authorization: Bearer $token" --output manifest.json \
+            --header 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/$name/manifests/$DIGEST"
+          echo "${DIGEST#sha256:}  manifest.json" | sha256sum --check --strict
+      - name: It is signed, and what is not right is refused
+        run: |
+          verify() {
+            gh attestation verify "oci://$1" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/image.yml" \
+              --source-ref "$2" --source-digest "$3" --predicate-type "$4"
+          }
+          built=https://slsa.dev/provenance/v1
+          verify "$IMAGE@$DIGEST" refs/heads/main "$GITHUB_SHA" "$built"
+          verify "$IMAGE@$DIGEST" refs/heads/main "$GITHUB_SHA" https://spdx.dev/Document/v2.3
+          none=0000000000000000000000000000000000000000
+          for wrong in "$IMAGE@$DIGEST refs/heads/other $GITHUB_SHA SourceRepositoryRef" "$IMAGE@$DIGEST refs/heads/main $none SourceRepositoryDigest" "$OTHER refs/heads/main $GITHUB_SHA 404"; do
+            read -r image ref commit word <<< "$wrong"
+            if said="$(verify "$image" "$ref" "$commit" "$built" 2>&1)"; then echo "Was not refused: $wrong"; exit 1; fi
+            # Refused for the right reason, and not because nobody could be asked.
+            grep --quiet "$word" <<< "$said"
+            echo "Refused as it should be: $said"
+          done
