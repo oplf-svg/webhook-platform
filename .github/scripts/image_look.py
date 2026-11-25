@@ -15,6 +15,7 @@ import re
 import sys
 import tarfile
 import urllib.request
+import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PLATFORM = ("linux", "amd64")
@@ -44,6 +45,8 @@ PRIVATE = {
     "a password": r"(?i:password|pwd) {0,3}= {0,3}(?:(?![;\"'{<])[!-~]){3}",
     "the number of an account": r"(?<!\w)\d{12}(?!\w)|[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}",
 }
+# What can be looked into. A file of another kind could hold anything.
+READABLE = (".dll", ".pdb", ".json")
 BASE_PACKAGES = {"base-files", "ca-certificates", "libc6", "libgcc-s1", "libssl3t64", "libstdc++6"}
 # Not "openssl": the base names that package, but holds only its empty folders and not the program. TOOLS looks for the program.
 TOOL_PACKAGES = {"apt", "bash", "busybox", "coreutils", "curl", "dash", "dpkg", "perl-base", "python3-minimal", "wget"}
@@ -205,21 +208,42 @@ def check_licences(files, labels, locks):
         need(len(data) > 200 or name == "NOTICE", f"{name} is too short to be a licence.")
 
 
+def packed(data):
+    """What a compiler has packed into a file: four bytes with the length, and then the text. It does that with the sources that
+    it made itself, in a .pdb, and with a .pdb that stands in a program."""
+    rest = memoryview(data)
+    for at in range(len(data) - 4):
+        size = int.from_bytes(rest[at : at + 4], "little")
+        with contextlib.suppress(zlib.error):
+            text = zlib.decompressobj(-zlib.MAX_WBITS).decompress(rest[at + 4 :], size + 1)
+            if len(text) == size > 0:
+                yield text
+
+
+def texts(data):
+    """A file in each form of text that .NET has. Names are UTF-8. Strings are UTF-16, and one can begin at any byte."""
+    yield from (data.decode("latin-1"), data.decode("utf-16-le", "replace"), data[1:].decode("utf-16-le", "replace"))
+    for inside in packed(data):
+        yield from texts(inside)
+
+
 def check_private(things, locks):
     # What a package of somebody else brings is public already, whatever is in it, and the lock file holds its fingerprint.
     theirs = {place for part, packages in locks.items() for package, _ in packages for place in (f"app/{part}/{package}.dll", f"app/licenses/{package.lower()}.txt")}
     for name, data in things.items():
         if name in theirs:
             continue
-        # Names in a .NET file are UTF-8. Strings are UTF-16, and one can begin at any byte.
-        texts = (data.decode("latin-1"), data.decode("utf-16-le", "replace"), data[1:].decode("utf-16-le", "replace"))
+        need(not name.startswith(tuple(f"app/{part}/" for part in PROGRAMS)) or name.endswith(READABLE), f"{name} is of a kind that nobody looks into.")
+        forms = list(texts(data))
         for what, pattern in PRIVATE.items():
-            need(not any(re.search(pattern, text, re.ASCII) for text in texts), f"{name} holds {what}.")
+            need(not any(re.search(pattern, text, re.ASCII) for text in forms), f"{name} holds {what}.")
 
 
 def check_programs(files, locks, commit):
     for path, data in files.items():
         need(not data.startswith((b"\x7fELF", b"#!", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")), f"{path} is a program for one kind of machine.")
+        # There is always the commit in it, so it shows that packed text is found at all.
+        need(not path.endswith(".pdb") or any(f"+{commit}".encode() in text for text in packed(data)), f"What is packed into {path} was not really looked into.")
     for part, name in PROGRAMS.items():
         need({f"app/{part}/{name}.dll", f"app/{part}/{name}.runtimeconfig.json", f"app/{part}/{name}.deps.json"} <= set(files), f"{part} is not complete.")
         frameworks = json.loads(files[f"app/{part}/{name}.runtimeconfig.json"])["runtimeOptions"]

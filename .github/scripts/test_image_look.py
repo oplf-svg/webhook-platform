@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import image_look as look
@@ -31,6 +32,19 @@ def fingerprint(data):
 
 def text(*words):
     return b"MZ" + b"".join(word.encode("utf-16-le") for word in words)
+
+
+def packed(*texts):
+    """As a compiler packs the sources that it made itself."""
+    result = b""
+    for one in texts:
+        pack = zlib.compressobj(wbits=-15)
+        result += len(one).to_bytes(4, "little") + pack.compress(one) + pack.flush()
+    return result
+
+
+def symbols(stamp=STAMP, more=b""):
+    return b"BSJB" + packed(b"global using System;", b"[assembly: Version(" + stamp + b")]") + more
 
 
 def layer(*members):
@@ -55,6 +69,7 @@ def program(name, core=("order.placed",), data=("select pg_advisory_xact_lock",)
         f"{name}.runtimeconfig.json": json.dumps({"runtimeOptions": {"frameworks": [{"name": one, "version": version} for one in frameworks]}}).encode(),
         f"{name}.deps.json": json.dumps({"libraries": libraries}).encode(),
         "Platform.Core.dll": text(*core) + stamp, "Platform.Data.dll": text(*data) + stamp, "Npgsql.dll": text(),
+        f"{name}.pdb": symbols(stamp), "Platform.Core.pdb": symbols(stamp), "Platform.Data.pdb": symbols(stamp),
     }
 
 
@@ -122,7 +137,7 @@ class Looked(unittest.TestCase):
 
     def test_a_right_image_passes(self):
         image, files = self.look()
-        self.assertEqual(len(files), 16)
+        self.assertEqual(len(files), 22)
         self.assertRegex(image.id, "^sha256:[0-9a-f]{64}$")
 
     def test_compressed_layers_pass_too(self):
@@ -339,6 +354,22 @@ class Looked(unittest.TestCase):
                         self.refused(f"{dll} of {part} was not made from this commit")
                         self.programs[part] = program(name)
 
+    def test_what_is_packed_and_cannot_be_read(self):
+        source = b"[assembly: Version(" + STAMP + b")]"
+        size, pack = len(source), packed(source)[4:]
+        wrong = {
+            "another commit": symbols(b"1.0.0+" + b"b" * 40), "no commit": symbols(b""), "not packed": b"BSJB" + source, "nothing": b"",
+            "cut off": b"BSJB" + packed(source)[:-20], "packed in another way": b"BSJB" + size.to_bytes(4, "little") + zlib.compress(source),
+            "a length too much": b"BSJB" + (size + 1).to_bytes(4, "little") + pack, "a length too little": b"BSJB" + (size - 1).to_bytes(4, "little") + pack,
+        }
+        for part, name in look.PROGRAMS.items():
+            for pdb in (f"{name}.pdb", "Platform.Core.pdb", "Platform.Data.pdb"):
+                for what, data in wrong.items():
+                    with self.subTest(part=part, pdb=pdb, what=what):
+                        self.programs[part][pdb] = data
+                        self.refused(f"What is packed into app/{part}/{pdb} was not really looked into")
+                        self.programs[part] = program(name)
+
     # What must not be public
 
     def test_private(self):
@@ -352,14 +383,19 @@ class Looked(unittest.TestCase):
         self.assertEqual(set(mistakes), set(look.PRIVATE))
         for what, words in mistakes.items():
             for word in words:
-                # In both forms of text, and the second one at both places where it can begin.
-                for form in (word.encode(), b"\0" + word.encode("utf-16-le"), b"\0\0" + word.encode("utf-16-le")):
+                # In both forms of text, the second one at both places where it can begin, and packed: once, and in a packed .pdb.
+                wide = word.encode("utf-16-le")
+                for form in (word.encode(), b"\0" + wide, b"\0\0" + wide, packed(word.encode()), packed(b"\0" + wide), packed(symbols(more=packed(word.encode())))):
                     for name in ("Platform.Data.dll", "Platform.Data.pdb", "Platform.Api.staticwebassets.endpoints.json"):
                         with self.subTest(what=what, word=word, name=name):
                             right = dict(self.programs["api"])
                             self.programs["api"][name] = right.get(name, b"") + form
                             self.refused(f"app/api/{name} holds {what}")
                             self.programs["api"] = right
+
+    def test_private_in_a_long_text_that_is_packed(self):
+        self.programs["api"]["Platform.Data.pdb"] = symbols(more=packed(b" " * 70_000 + b"somebody@example.com"))
+        self.refused("app/api/Platform.Data.pdb holds a mail address")
 
     def test_private_between_bytes_that_are_no_text(self):
         # A byte above 127 is no letter here. Otherwise it could hide what stands beside it.
@@ -389,12 +425,21 @@ class Looked(unittest.TestCase):
         for part, name in (("api", "Other.dll"), ("worker", "npgsql.dll"), ("api", "Npgsql.pdb"), ("worker", "Npgsql.Other.dll"), ("worker", "more/Npgsql.dll")):
             with self.subTest(part=part, name=name):
                 right = dict(self.programs[part])
-                self.programs[part][name] = b"somebody@example.com"
+                self.programs[part][name] = symbols(more=b"somebody@example.com")
                 self.refused(f"app/{part}/{name} holds a mail address")
                 self.programs[part] = right
 
+    def test_a_kind_that_nobody_looks_into(self):
+        for part in look.PROGRAMS:
+            for name in ("wwwroot/site.js.gz", "data.zip", "Npgsql", "Platform.dll.br", "more/x.resources"):
+                with self.subTest(part=part, name=name):
+                    right = dict(self.programs[part])
+                    self.programs[part][name] = b"x"
+                    self.refused(f"app/{part}/{name} is of a kind that nobody looks into")
+                    self.programs[part] = right
+
     def test_what_was_found_is_not_printed(self):
-        for name, data, words in (("Platform.Data.pdb", b"somebody@example.com", "app/api/Platform.Data.pdb holds a mail address."), ("somebody@example.com", b"somebody@example.com", "The name of a file holds a mail address.")):
+        for name, data, words in (("Platform.Data.pdb", symbols(more=b"somebody@example.com"), "app/api/Platform.Data.pdb holds a mail address."), ("somebody@example.com", b"somebody@example.com", "The name of a file holds a mail address.")):
             with self.subTest(name):
                 right = dict(self.programs["api"])
                 self.programs["api"][name] = data
@@ -408,7 +453,7 @@ class Looked(unittest.TestCase):
                      "@GSystem.Net.Primitives.dll", "x@System.Net", "x@system.network", "Password", "Password=", "password=;Host=x", "Password={secret}", "Password='x'", "pwd=\"x\"", "Password=<x>", "whsec_", COMMIT.replace("a", "1"), "sha256:" + "1" * 64, "20261125004917", "12345678901", "a1234-b1234", "org.opencontainers.image.source"):
             with self.subTest(word):
                 right = dict(self.programs["api"])
-                self.programs["api"]["Platform.Data.pdb"] = word.encode() + b"\0\0\0" + word.encode("utf-16-le")
+                self.programs["api"]["Platform.Data.pdb"] = symbols(more=word.encode() + b"\0\0\0" + word.encode("utf-16-le") + b"\0\0\0" + packed(word.encode()))
                 self.look()
                 self.programs["api"] = right
 
@@ -431,7 +476,7 @@ class Looked(unittest.TestCase):
         self.assertIn(f"{fingerprint(LICENCE)}       280 app/licenses/LICENSE", log)
 
     def test_nothing_for_the_next_job_if_it_is_refused(self):
-        self.programs["api"]["Platform.Data.pdb"] = b"somebody@example.com"
+        self.programs["api"]["Platform.Data.pdb"] = symbols(more=b"somebody@example.com")
         self.write()
         self.assertEqual(self.main(), (1, "", ["Refused: app/api/Platform.Data.pdb holds a mail address."]))
 
