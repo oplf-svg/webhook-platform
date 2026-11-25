@@ -15,6 +15,7 @@ import re
 import sys
 import tarfile
 import urllib.request
+import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PLATFORM = ("linux", "amd64")
@@ -34,6 +35,18 @@ PLACES = {*PROGRAMS, "certificates", "licenses"}
 TOOLS = {"sh", "bash", "dash", "ash", "busybox", "apt", "apt-get", "dpkg", "curl", "wget", "perl", "python3", "openssl"}
 # Text in a .NET file is UTF-16. The second word is always there, so it shows that such text is found at all.
 MARKS = {"Platform.Core.dll": ("PLATFORM_FAULT", "order.placed"), "Platform.Data.dll": ("PLATFORM_SQL", "select pg_advisory_xact_lock")}
+# Whoever pushes an image publishes it: nobody has to agree any more, and it cannot be taken back. So this is the last gate. What
+# is found is never printed, because everybody can read the log. These are forms of private text, not a list of it. GitHub's
+# machines build in /home/runner, and the base has a /home/app.
+PRIVATE = {
+    "the folder of a person": r"/Users/\w|/home/(?!runner/|app\b)\w|[A-Za-z]:\\{1,2}Users\\{1,2}\w",
+    "a mail address": r"@(?:[\w-]{1,63}\.){1,5}(?:com|org|net|io|dev|co|eu|uk|es|fr|mx|local)(?!\w)",
+    "a key": r"-----BEGIN [A-Z ]{0,20}PRIVATE KEY|gh[opsur]_\w{30}|github_pat_\w{20}|(?:AKIA|ASIA)[A-Z0-9]{16}|AccountKey=[\w+/]{20}|AIza[\w-]{30}|sk-ant-[\w-]{20}|whsec_[\w+/]{24}|eyJ[\w-]{16,512}\.eyJ",
+    "a password": r"(?i:password|pwd) {0,3}= {0,3}(?:(?![;\"'{<])[!-~]){3}",
+    "the number of an account": r"(?<!\w)\d{12}(?!\w)|[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}",
+}
+# What can be looked into. A file of another kind could hold anything.
+READABLE = (".dll", ".pdb", ".json")
 BASE_PACKAGES = {"base-files", "ca-certificates", "libc6", "libgcc-s1", "libssl3t64", "libstdc++6"}
 # Not "openssl": the base names that package, but holds only its empty folders and not the program. TOOLS looks for the program.
 TOOL_PACKAGES = {"apt", "bash", "busybox", "coreutils", "curl", "dash", "dpkg", "perl-base", "python3-minimal", "wget"}
@@ -195,9 +208,42 @@ def check_licences(files, labels, locks):
         need(len(data) > 200 or name == "NOTICE", f"{name} is too short to be a licence.")
 
 
-def check_programs(files, locks):
+def packed(data):
+    """What a compiler has packed into a file: four bytes with the length, and then the text. It does that with the sources that
+    it made itself, in a .pdb, and with a .pdb that stands in a program."""
+    rest = memoryview(data)
+    for at in range(len(data) - 4):
+        size = int.from_bytes(rest[at : at + 4], "little")
+        with contextlib.suppress(zlib.error):
+            text = zlib.decompressobj(-zlib.MAX_WBITS).decompress(rest[at + 4 :], size + 1)
+            if len(text) == size > 0:
+                yield text
+
+
+def texts(data):
+    """A file in each form of text that .NET has. Names are UTF-8. Strings are UTF-16, and one can begin at any byte."""
+    yield from (data.decode("latin-1"), data.decode("utf-16-le", "replace"), data[1:].decode("utf-16-le", "replace"))
+    for inside in packed(data):
+        yield from texts(inside)
+
+
+def check_private(things, locks):
+    # What a package of somebody else brings is public already, whatever is in it, and the lock file holds its fingerprint.
+    theirs = {place for part, packages in locks.items() for package, _ in packages for place in (f"app/{part}/{package}.dll", f"app/licenses/{package.lower()}.txt")}
+    for name, data in things.items():
+        if name in theirs:
+            continue
+        need(not name.startswith(tuple(f"app/{part}/" for part in PROGRAMS)) or name.endswith(READABLE), f"{name} is of a kind that nobody looks into.")
+        forms = list(texts(data))
+        for what, pattern in PRIVATE.items():
+            need(not any(re.search(pattern, text, re.ASCII) for text in forms), f"{name} holds {what}.")
+
+
+def check_programs(files, locks, commit):
     for path, data in files.items():
         need(not data.startswith((b"\x7fELF", b"#!", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")), f"{path} is a program for one kind of machine.")
+        # There is always the commit in it, so it shows that packed text is found at all.
+        need(not path.endswith(".pdb") or any(f"+{commit}".encode() in text for text in packed(data)), f"What is packed into {path} was not really looked into.")
     for part, name in PROGRAMS.items():
         need({f"app/{part}/{name}.dll", f"app/{part}/{name}.runtimeconfig.json", f"app/{part}/{name}.deps.json"} <= set(files), f"{part} is not complete.")
         frameworks = json.loads(files[f"app/{part}/{name}.runtimeconfig.json"])["runtimeOptions"]
@@ -205,6 +251,8 @@ def check_programs(files, locks):
         need({"Microsoft.AspNetCore.App"} <= {one["name"] for one in frameworks} and all(one["version"].startswith("10.0.") for one in frameworks), f"{part} wants another runtime than the base has.")
         inside = {tuple(key.split("/")): value["sha512"] for key, value in json.loads(files[f"app/{part}/{name}.deps.json"])["libraries"].items() if value["type"] != "project"}
         need(inside == locks[part], f"The packages of {part} are not the locked ones: {sorted(inside)}.")
+        for dll in (f"{name}.dll", *MARKS):
+            need(f"+{commit}".encode() in files.get(f"app/{part}/{dll}", b""), f"{dll} of {part} was not made from this commit.")
         for dll, (mark, always) in MARKS.items():
             data = files.get(f"app/{part}/{dll}", b"")
             need(always.encode("utf-16-le") in data, f"{dll} of {part} was not really looked into.")
@@ -241,7 +289,8 @@ def look(path, commit, base, locks):
         files = check_files(image, base)
         check_certificates(files)
         check_licences(files, image.config["config"].get("Labels") or {}, locks)
-        check_programs(files, locks)
+        check_programs(files, locks, commit)
+        check_private({"The text of the settings": json.dumps(image.config).encode(), "The name of a file": "\n".join(files).encode()} | files, locks)
         return image, files
 
 
@@ -261,6 +310,8 @@ def main(arguments):
         return 1
     print(f"tar={hashlib.sha256(image.path.read_bytes()).hexdigest()}")
     print(f"config={image.id}")
+    for path, data in sorted(files.items()):
+        print(f"{fingerprint(data)} {len(data):>9,} {path}", file=sys.stderr)
     print(f"{len(files)} files of ours, {sum(map(len, files.values())):,} bytes, on {len(base['rootfs']['diff_ids'])} layers of the base.", file=sys.stderr)
     return 0
 
