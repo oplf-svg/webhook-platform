@@ -1,5 +1,6 @@
 """Shows that image_look.py refuses. Each mistake is made alone, in an image that is right otherwise."""
 
+import contextlib
 import copy
 import hashlib
 import io
@@ -17,6 +18,9 @@ COMMIT = "a" * 40
 HASH = "sha512-" + "x" * 86 + "=="
 CERTIFICATE = b"-----BEGIN CERTIFICATE-----"
 LICENCE = b"Apache License" * 20
+STAMP = f"1.0.0+{COMMIT}".encode()
+# Put together at run time, so that a check of these sources does not take the made-up folders for real ones.
+PERSON = "somebody"
 LOCKS = {part: {("Npgsql", "10.0.3"): HASH} for part in look.PROGRAMS}
 ENV = ["PATH=/usr/bin", "APP_UID=1654", "ASPNETCORE_HTTP_PORTS=8080", "DOTNET_VERSION=10.0.15"]
 
@@ -43,14 +47,14 @@ def layer(*members):
     return buffer.getvalue()
 
 
-def program(name, core=("order.placed",), data=("select pg_advisory_xact_lock",), packages=None, frameworks=("Microsoft.NETCore.App", "Microsoft.AspNetCore.App"), version="10.0.0"):
+def program(name, core=("order.placed",), data=("select pg_advisory_xact_lock",), packages=None, frameworks=("Microsoft.NETCore.App", "Microsoft.AspNetCore.App"), version="10.0.0", stamp=STAMP):
     libraries = {f"{name}/1.0.0": {"type": "project", "sha512": ""}}
     libraries |= {f"{package}/{number}": {"type": "package", "sha512": value} for (package, number), value in (packages or {("Npgsql", "10.0.3"): HASH}).items()}
     return {
-        f"{name}.dll": text("PLATFORM_DATABASE"),
+        f"{name}.dll": text("PLATFORM_DATABASE") + stamp,
         f"{name}.runtimeconfig.json": json.dumps({"runtimeOptions": {"frameworks": [{"name": one, "version": version} for one in frameworks]}}).encode(),
         f"{name}.deps.json": json.dumps({"libraries": libraries}).encode(),
-        "Platform.Core.dll": text(*core), "Platform.Data.dll": text(*data), "Npgsql.dll": text(),
+        "Platform.Core.dll": text(*core) + stamp, "Platform.Data.dll": text(*data) + stamp, "Npgsql.dll": text(),
     }
 
 
@@ -324,6 +328,112 @@ class Looked(unittest.TestCase):
                     del self.programs[part][name + end]
                     self.refused("is not complete")
                     self.programs[part] = program(name)
+
+    def test_a_program_of_another_commit(self):
+        other = b"1.0.0+" + b"b" * 40
+        for part, name in look.PROGRAMS.items():
+            for dll in (f"{name}.dll", "Platform.Core.dll", "Platform.Data.dll"):
+                for stamp in (other, b"", STAMP[:-1], COMMIT.encode()):
+                    with self.subTest(part=part, dll=dll, stamp=stamp):
+                        self.programs[part][dll] = self.programs[part][dll].replace(STAMP, stamp)
+                        self.refused(f"{dll} of {part} was not made from this commit")
+                        self.programs[part] = program(name)
+
+    # What must not be public
+
+    def test_private(self):
+        mistakes = {
+            "the folder of a person": (f"/Users/{PERSON}/code", f"/home/{PERSON}/code", "/home/runner2/x", "/home/application/x", f"C:\\Users\\{PERSON}", f"C:\\\\Users\\\\{PERSON}"),
+            "a mail address": ("somebody@example.com", "<some.body+x@mail.Example.co>", "x" * 99 + "@example.com", "'some body'@example.com", "a@b-c.com-d", *(f"a@b.{end}" for end in "com org net io dev co eu uk es fr mx local".split())),
+            "a key": ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----", *(f"gh{kind}_" + "a1B" * 12 for kind in "opsur"), "github_pat_" + "a1B" * 8, "AKIA" + "A1" * 8, "ASIA" + "A1" * 8, "AccountKey=" + "aB1/" * 5, "AIza" + "a1B" * 10, "sk-ant-" + "a1B-" * 5, "whsec_" + "aB1/" * 8, "eyJ" + "a" * 20 + ".eyJ" + "b" * 20),
+            "a password": ("Password=hunter2", "password = hunter2", "Pwd=abc"),
+            "the number of an account": ("arn:aws:iam::123456789012:role/x", "/subscriptions/0f8fad5b-d9cb-469f-a165-70867728950e/x", "x0F8FAD5B-D9CB-469F-A165-70867728950Ex"),
+        }
+        self.assertEqual(set(mistakes), set(look.PRIVATE))
+        for what, words in mistakes.items():
+            for word in words:
+                # In both forms of text, and the second one at both places where it can begin.
+                for form in (word.encode(), b"\0" + word.encode("utf-16-le"), b"\0\0" + word.encode("utf-16-le")):
+                    for name in ("Platform.Data.dll", "Platform.Data.pdb", "Platform.Api.staticwebassets.endpoints.json"):
+                        with self.subTest(what=what, word=word, name=name):
+                            right = dict(self.programs["api"])
+                            self.programs["api"][name] = right.get(name, b"") + form
+                            self.refused(f"app/api/{name} holds {what}")
+                            self.programs["api"] = right
+
+    def test_private_between_bytes_that_are_no_text(self):
+        # A byte above 127 is no letter here. Otherwise it could hide what stands beside it.
+        self.programs["api"]["Platform.Data.dll"] += b"\xe9123456789012\xe9"
+        self.refused("holds the number of an account")
+
+    def test_private_in_a_licence_and_in_the_settings(self):
+        right = dict(self.licences)
+        self.licences["NOTICE"] += b"somebody@example.com"
+        self.refused("app/licenses/NOTICE holds a mail address")
+        self.licences = right
+        for path in (f"/Users/{PERSON}/x", f"C:\\Users\\{PERSON}\\x"):
+            with self.subTest(path):
+                self.config["history"] = [{"created_by": f"COPY {path} /app"}]
+                self.refused("The text of the settings holds the folder of a person")
+        self.config["history"] = []
+        self.config["config"]["Labels"]["org.opencontainers.image.vendor"] = "somebody@example.com"
+        self.refused("The text of the settings holds a mail address")
+
+    def test_private_in_a_package_of_somebody_else(self):
+        # Not refused: it is public already.
+        for part in look.PROGRAMS:
+            self.programs[part]["Npgsql.dll"] += b"somebody@example.com /home/somebody/x 0f8fad5b-d9cb-469f-a165-70867728950e"
+        self.licences["npgsql.txt"] += b" somebody@example.com"
+        self.look()
+        # But only what a locked package is called, and only in its place.
+        for part, name in (("api", "Other.dll"), ("worker", "npgsql.dll"), ("api", "Npgsql.pdb"), ("worker", "Npgsql.Other.dll"), ("worker", "more/Npgsql.dll")):
+            with self.subTest(part=part, name=name):
+                right = dict(self.programs[part])
+                self.programs[part][name] = b"somebody@example.com"
+                self.refused(f"app/{part}/{name} holds a mail address")
+                self.programs[part] = right
+
+    def test_what_was_found_is_not_printed(self):
+        for name, data, words in (("Platform.Data.pdb", b"somebody@example.com", "app/api/Platform.Data.pdb holds a mail address."), ("somebody@example.com", b"somebody@example.com", "The name of a file holds a mail address.")):
+            with self.subTest(name):
+                right = dict(self.programs["api"])
+                self.programs["api"][name] = data
+                with self.assertRaises(look.Refused) as caught:
+                    self.look()
+                self.assertEqual(str(caught.exception), words)
+                self.programs["api"] = right
+
+    def test_what_is_not_private(self):
+        for word in ("/home/runner/work/webhook-platform/webhook-platform/src/Platform.Api/obj/Platform.Api.pdb", "COPY /rootfs/home/app /home/app", "https://raw.githubusercontent.com/oplf-svg/webhook-platform/" + COMMIT + "/*",
+                     "@GSystem.Net.Primitives.dll", "x@System.Net", "x@system.network", "Password", "Password=", "password=;Host=x", "Password={secret}", "Password='x'", "pwd=\"x\"", "Password=<x>", "whsec_", COMMIT.replace("a", "1"), "sha256:" + "1" * 64, "20261125004917", "12345678901", "a1234-b1234", "org.opencontainers.image.source"):
+            with self.subTest(word):
+                right = dict(self.programs["api"])
+                self.programs["api"]["Platform.Data.pdb"] = word.encode() + b"\0\0\0" + word.encode("utf-16-le")
+                self.look()
+                self.programs["api"] = right
+
+    # What it says
+
+    def main(self):
+        for name, value in (("base_config", lambda dockerfile: self.base), ("locked", lambda: LOCKS)):
+            self.addCleanup(setattr, look, name, getattr(look, name))
+            setattr(look, name, value)
+        out, log = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(log):
+            done = look.main([str(self.path), COMMIT])
+        return done, out.getvalue(), log.getvalue().splitlines()
+
+    def test_the_two_lines_for_the_next_job_and_the_rest_for_the_log(self):
+        image, files = self.look()
+        done, out, log = self.main()
+        self.assertEqual((done, out), (0, f"tar={hashlib.sha256(self.path.read_bytes()).hexdigest()}\nconfig={image.id}\n"))
+        self.assertEqual(len(log), len(files) + 1)
+        self.assertIn(f"{fingerprint(LICENCE)}       280 app/licenses/LICENSE", log)
+
+    def test_nothing_for_the_next_job_if_it_is_refused(self):
+        self.programs["api"]["Platform.Data.pdb"] = b"somebody@example.com"
+        self.write()
+        self.assertEqual(self.main(), (1, "", ["Refused: app/api/Platform.Data.pdb holds a mail address."]))
 
 
 class Base(unittest.TestCase):

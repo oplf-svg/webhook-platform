@@ -58,12 +58,16 @@ be: then Npgsql's message can repeat a word of it.
 
 1. The tests run. The image is made of the very files that they ran against: they are copied, and nothing is run while it is
    built. The base is Microsoft's ASP.NET image without a shell, at a fingerprint.
-2. Another machine looks into it: base, settings, layers, files, packages against the lock files, licences, and no code for
-   tests. It also writes a list of what is in it.
+2. Another machine looks into it: base, settings, layers, files, packages against the lock files, licences, the commit in each
+   program, no code for tests, and in what is ours no folder of a person, mail address, key, password or number of an account.
+   It also writes a list of what is in it. It is the last gate: whoever pushes an image of a public repository publishes it in
+   the same second.
 3. A third one puts exactly that file on GitHub's registry, if this commit has no image yet. A fourth one signs how it was
    built, and the list. These two run nothing of this repository.
 
-Once the package is public, anybody can check an image, with its fingerprint and its commit:
+Anybody can fetch an image, `docker pull ghcr.io/oplf-svg/webhook-platform@sha256:FINGERPRINT`, and check it, with its
+fingerprint and its commit. The commit is its name on the registry. The name that begins with `sha256-` holds the signatures
+and is no image.
 
 ```bash
 gh attestation verify oci://ghcr.io/oplf-svg/webhook-platform@sha256:FINGERPRINT \
@@ -71,7 +75,8 @@ gh attestation verify oci://ghcr.io/oplf-svg/webhook-platform@sha256:FINGERPRINT
   --source-ref refs/heads/main --source-digest COMMIT
 ```
 
-`--repo` alone would not be enough, because any workflow of the repository could have signed.
+`--repo` alone would not be enough, because any workflow of the repository could have signed. The list that is signed names the
+image by the fingerprint of the file that was looked into; what ties it to the image is the signature.
 
 ## What it does not promise yet
 
