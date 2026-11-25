@@ -228,10 +228,10 @@ def check_contents(contents, locks):
     packages = [ref["referenceLocator"] for one in contents["packages"] for ref in one.get("externalRefs", []) if ref["referenceType"] == "purl"]
     debs = {found.group(1) for one in packages if (found := re.match(r"pkg:deb/ubuntu/([^@]+)@", one.replace("%2B", "+").replace("%2b", "+")))}
     nugets = {found.groups() for one in packages if (found := re.match(r"pkg:nuget/([^@]+)@([^?]+)", one))}
-    need(BASE_PACKAGES <= debs, f"The list does not name what the base holds: {sorted(BASE_PACKAGES - debs)}.")
+    need(BASE_PACKAGES <= debs, f"The list does not name what the base holds: {sorted(BASE_PACKAGES - debs)}. It names {sorted(debs)}.")
     need(not debs & TOOL_PACKAGES, f"The list names tools: {sorted(debs & TOOL_PACKAGES)}.")
     missing = {package for packages in locks.values() for package in packages} - nugets
-    need(not missing, f"The list does not name {sorted(missing)}.")
+    need(not missing, f"The list does not name {sorted(missing)}. It names {len(nugets)} of .NET, the first are {sorted(nugets)[:40]}.")
     return len(debs), len(nugets)
 
 

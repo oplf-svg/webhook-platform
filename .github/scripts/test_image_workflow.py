@@ -84,7 +84,7 @@ def problems(text):
 def list_problems(text):
     """What has to hold for the script that makes the list."""
     found = []
-    for words in ('--user "$(id -u):$(id -g)"', "--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", ":/in:ro", "set -euo pipefail", "--contents"):
+    for words in ('--user "$(id -u):$(id -g)"', "--network none", "--read-only", "--tmpfs /tmp:mode=1777", "--cap-drop ALL", "--security-opt no-new-privileges", ":/in:ro", "set -euo pipefail", "--contents"):
         if words not in text:
             found.append(f"{words} is missing")
     if not re.search(r"(?m)^syft=ghcr\.io/anchore/syft@sha256:[0-9a-f]{64}$", text):
@@ -141,7 +141,7 @@ class Form(unittest.TestCase):
     def test_the_script_of_the_list(self):
         text = LIST.read_text(encoding="utf-8")
         self.assertEqual(list_problems(text), [])
-        for words in ('--user "$(id -u):$(id -g)" ', "--network none ", "--read-only ", "--cap-drop ALL ", "--security-opt no-new-privileges ", ":ro", "set -euo pipefail", " --contents"):
+        for words in ('--user "$(id -u):$(id -g)" ', "--network none ", "--read-only ", ":mode=1777", "--cap-drop ALL ", "--security-opt no-new-privileges ", ":ro", "set -euo pipefail", " --contents"):
             with self.subTest(words):
                 self.assertNotEqual(list_problems(text.replace(words, "")), [])
         self.assertNotEqual(list_problems(re.sub(r"@sha256:[0-9a-f]{64}", ":latest", text)), [])
