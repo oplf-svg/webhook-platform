@@ -1,0 +1,31 @@
+name: watch
+
+# Each morning, from another repo: whether the night run of cloud-labs is on, has run and was fine. A schedule that GitHub
+# dropped or turned off makes nothing red by itself. No cloud, no secret, and no code of this repo.
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: watch
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      # The check is the one of cloud-labs, at a commit that was approved there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: oplf-svg/cloud-labs
+          ref: bdccb3ccd7a7d483d99b8ee4c7dc2c5fa676bf14
+          persist-credentials: false
+      - run: python3 bootstrap/scripts/github_checks.py schedules cloud-labs

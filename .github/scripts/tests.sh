@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+python3 .github/scripts/test_texts.py
 bash .github/scripts/prepare.sh
 
 echo "Two builds: one that is meant to be used, and one that can be told to die."
@@ -26,3 +27,7 @@ echo "The tests that kill things."
 cd crash
 ../build/venv/bin/python -m pytest -p no:cacheprovider -v test_steps.py
 ../build/venv/bin/python -m pytest -p no:cacheprovider -s test_storm.py
+cd ..
+
+# The image is made of what was tested just now, and tried. Not on a Mac: it would be for another kind of machine.
+[ "${CI:-}" != true ] || bash .github/scripts/image_try.sh
